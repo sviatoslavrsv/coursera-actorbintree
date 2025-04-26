@@ -84,11 +84,13 @@ class BinaryTreeSet extends Actor {
    * all non-removed elements into.
    */
   def garbageCollecting(newRoot: ActorRef): Receive = {
-    case operation: Operation => pendingQueue.appended(operation)
-    case GC =>
+    case operation: Operation => pendingQueue = pendingQueue.enqueue(operation)
+    case CopyFinished =>
       root ! PoisonPill
       root = newRoot
-
+      context.become(normal)
+      pendingQueue.foreach(op => root ! op)
+      pendingQueue = Queue.empty[Operation]
   }
 
 }
@@ -126,15 +128,45 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
   // optional
   /** Handles `Operation` messages and `CopyTo` requests. */
   val normal: Receive = {
-    case _ => ???
+    case Insert(requester, id, newElem) =>
+      if (newElem > elem) insert(newElem, Right, requester)
+      else if (newElem < elem) insert(newElem, Left, requester)
+      else removed = false
+      requester ! OperationFinished(id)
+    case msg@Contains(requester, id, newElem) =>
+      val notContained = ContainsResult(id, result = false)
+      val result = if (newElem > elem) subtrees.get(Right).map(ref => ref ! msg)
+      else if (newElem < elem) subtrees.get(Left).map(ref => ref ! msg)
+      else if (newElem == elem) Some(requester ! ContainsResult(id, result = true))
+      else Some(requester ! notContained)
+      result.getOrElse(requester ! notContained)
+    case msg@Remove(requester, id, elemToRemove) =>
+      if (elemToRemove > elem) subtrees.get(Right).foreach(ref => ref ! msg)
+      else if (elemToRemove < elem) subtrees.get(Left).foreach(ref => ref ! msg)
+      else this.removed = true
+      requester ! OperationFinished(id)
+    case CopyTo(newRoot) =>
+      if (!removed) newRoot ! Insert(self, elem, elem)
+      else if (subtrees.isEmpty) context.parent ! CopyFinished
+      subtrees.values.foreach(_ ! CopyTo(newRoot))
+      context.become(copying(subtrees.values.toSet, insertConfirmed = this.removed))
   }
 
-  // optional
+  def insert(newElem: Int, position: Position, requester: ActorRef): Unit = {
+    subtrees.get(position) match {
+      case Some(_) => requester ! position
+      case None =>
+        val newNodeActor = context.actorOf(props(newElem, initiallyRemoved = false))
+        subtrees = subtrees ++ Map(position -> newNodeActor)
+    }
+  }
 
   /** `expected` is the set of ActorRefs whose replies we are waiting for,
    * `insertConfirmed` tracks whether the copy of this node to the new tree has been confirmed.
    */
-  def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = ???
-
+  def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = {
+    case CopyFinished => context.become(copying(expected - sender(), insertConfirmed))
+    case OperationFinished(id) => if (id == elem) context.become(copying(expected, insertConfirmed = true))
+  }
 
 }
