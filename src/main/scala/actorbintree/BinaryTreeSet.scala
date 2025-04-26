@@ -128,17 +128,19 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
   // optional
   /** Handles `Operation` messages and `CopyTo` requests. */
   val normal: Receive = {
-    case Insert(requester, id, newElem) =>
-      if (newElem > elem) insert(newElem, Right, requester)
-      else if (newElem < elem) insert(newElem, Left, requester)
+    case msg@Insert(requester, id, newElem) =>
+      if (newElem > elem) insert(newElem, Right, msg)
+      else if (newElem < elem) insert(newElem, Left, msg)
       else removed = false
       requester ! OperationFinished(id)
     case msg@Contains(requester, id, newElem) =>
       val notContained = ContainsResult(id, result = false)
-      val result = if (newElem > elem) subtrees.get(Right).map(ref => ref ! msg)
-      else if (newElem < elem) subtrees.get(Left).map(ref => ref ! msg)
-      else if (newElem == elem) Some(requester ! ContainsResult(id, result = true))
-      else Some(requester ! notContained)
+      val result = {
+        if (newElem > elem) subtrees.get(Right).map(ref => ref ! msg)
+        else if (newElem < elem) subtrees.get(Left).map(ref => ref ! msg)
+        else if (newElem == elem && !removed) Some(requester ! ContainsResult(id, result = true))
+        else None
+      }
       result.getOrElse(requester ! notContained)
     case msg@Remove(requester, id, elemToRemove) =>
       if (elemToRemove > elem) subtrees.get(Right).foreach(ref => ref ! msg)
@@ -152,12 +154,12 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
       context.become(copying(subtrees.values.toSet, insertConfirmed = this.removed))
   }
 
-  def insert(newElem: Int, position: Position, requester: ActorRef): Unit = {
+  def insert(newElem: Int, position: Position, msg: Operation): Unit = {
     subtrees.get(position) match {
-      case Some(_) => requester ! position
+      case Some(ref) => ref ! msg
       case None =>
         val newNodeActor = context.actorOf(props(newElem, initiallyRemoved = false))
-        subtrees = subtrees ++ Map(position -> newNodeActor)
+        subtrees = subtrees + ((position, newNodeActor))
     }
   }
 
