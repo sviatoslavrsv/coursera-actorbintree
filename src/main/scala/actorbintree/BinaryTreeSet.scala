@@ -88,9 +88,9 @@ class BinaryTreeSet extends Actor {
     case CopyFinished =>
       root ! PoisonPill
       root = newRoot
-      context.become(normal)
       pendingQueue.foreach(op => root ! op)
       pendingQueue = Queue.empty[Operation]
+      context.become(normal)
   }
 
 }
@@ -128,38 +128,39 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
   // optional
   /** Handles `Operation` messages and `CopyTo` requests. */
   val normal: Receive = {
-    case msg@Insert(requester, id, newElem) =>
-      if (newElem > elem) insert(newElem, Right, msg)
-      else if (newElem < elem) insert(newElem, Left, msg)
-      else removed = false
-      requester ! OperationFinished(id)
-    case msg@Contains(requester, id, newElem) =>
-      val notContained = ContainsResult(id, result = false)
-      val result = {
-        if (newElem > elem) subtrees.get(Right).map(ref => ref ! msg)
-        else if (newElem < elem) subtrees.get(Left).map(ref => ref ! msg)
-        else if (newElem == elem && !removed) Some(requester ! ContainsResult(id, result = true))
-        else None
+    case msg@Insert(requester, id, el) =>
+      if (el > elem) insert(el, Right, msg, requester, id)
+      else if (el < elem) insert(el, Left, msg, requester, id)
+      else {
+        removed = false
+        requester ! OperationFinished(id)
       }
-      result.getOrElse(requester ! notContained)
-    case msg@Remove(requester, id, elemToRemove) =>
-      if (elemToRemove > elem) subtrees.get(Right).foreach(ref => ref ! msg)
-      else if (elemToRemove < elem) subtrees.get(Left).foreach(ref => ref ! msg)
-      else this.removed = true
-      requester ! OperationFinished(id)
+    case msg@Contains(requester, id, el) =>
+      val notContained = ContainsResult(id, result = false)
+      if (el > elem) subtrees.get(Right).map(ref => ref ! msg).getOrElse(requester ! notContained)
+      else if (el < elem) subtrees.get(Left).map(ref => ref ! msg).getOrElse(requester ! notContained)
+      else if (el == elem && !removed) requester ! ContainsResult(id, result = true) else requester ! notContained
+    case msg@Remove(requester, id, el) =>
+      if (el > elem) subtrees.get(Right).map(ref => ref ! msg).getOrElse(requester ! OperationFinished(id))
+      else if (el < elem) subtrees.get(Left).map(ref => ref ! msg).getOrElse(requester ! OperationFinished(id))
+      else {
+        this.removed = true
+        requester ! OperationFinished(id)
+      }
     case CopyTo(newRoot) =>
       if (!removed) newRoot ! Insert(self, elem, elem)
       else if (subtrees.isEmpty) context.parent ! CopyFinished
-      subtrees.values.foreach(_ ! CopyTo(newRoot))
       context.become(copying(subtrees.values.toSet, insertConfirmed = this.removed))
+      subtrees.values.foreach(_ ! CopyTo(newRoot))
   }
 
-  def insert(newElem: Int, position: Position, msg: Operation): Unit = {
+  def insert(newElem: Int, position: Position, msg: Operation, requester: ActorRef, id: Int): Unit = {
     subtrees.get(position) match {
       case Some(ref) => ref ! msg
       case None =>
         val newNodeActor = context.actorOf(props(newElem, initiallyRemoved = false))
         subtrees = subtrees + ((position, newNodeActor))
+        requester ! OperationFinished(id)
     }
   }
 
